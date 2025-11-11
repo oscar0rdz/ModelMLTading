@@ -1,14 +1,21 @@
 # End‑to‑End ML Trading Pipeline (BTC/USDT · 15m)
 
-> **Propósito del repo:** demostrar, de forma clara y reproducible, cómo construir **un pipeline de ML de punta a punta** (features → entrenamiento con tuning → calibración → selección de umbral por EV → *walk‑forward backtest*). Este repositorio **no es** una promesa de rentabilidad; es un **proyecto de portafolio** orientado a ingeniería de datos/ML aplicado a mercados.
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](#)
+[![XGBoost](https://img.shields.io/badge/Model-XGBoost-EB5F15?logo=xgboost&logoColor=white)](#)
+[![Optuna](https://img.shields.io/badge/Tuning-Optuna-573E8C?logo=optuna&logoColor=white)](#)
+[![Status](https://img.shields.io/badge/Use-Portfolio-blue)](#)
+
+> **Objetivo:** mostrar, de forma clara y reproducible, cómo construir **un pipeline de ML de punta a punta** (features → entrenamiento con tuning → calibración → selección de umbral por EV → *walk‑forward backtest*).  
+> Este repositorio **no promete rentabilidad**; es un **proyecto de portafolio** de ingeniería de ML aplicado a mercados.
 
 ---
 
 ## Tabla de contenidos
 - [Resumen ejecutivo](#resumen-ejecutivo)
+- [Demo visual](#demo-visual)
 - [Cómo funciona (pipeline ML)](#cómo-funciona-pipeline-ml)
 - [Resultados del modelo](#resultados-del-modelo)
-- [Backtest Walk‑Forward (WFA)](#backtest-walkforward-wfa)
+- [Backtest Walk‑Forward (WFA)](#backtest-walk-forward-wfa)
 - [Limitaciones y decisiones de diseño](#limitaciones-y-decisiones-de-diseño)
 - [Próximos pasos](#próximos-pasos)
 - [Estructura del proyecto](#estructura-del-proyecto)
@@ -16,21 +23,22 @@
 - [Uso](#uso)
 - [Configuración (.env)](#configuración-env)
 - [Reproducibilidad](#reproducibilidad)
+- [Cómo subir a GitHub](#cómo-subir-a-github)
 - [Descargo de responsabilidad](#descargo-de-responsabilidad)
 
 ---
 
 ## Resumen ejecutivo
 
-- **Algoritmo principal:** XGBoost (clasificación binaria).  
-- **Objetivo:** predecir probabilidad de que una operación alcance el *take‑profit* antes del *stop* en un horizonte de **3 velas**.  
-- **Métrica objetivo en tuning:** **PR‑AUC** (adecuada cuando hay desbalance).  
-- **Calibración:** **Isotonic Regression** en *hold‑out* para convertir *scores* en probabilidades bien calibradas.  
-- **Selección de umbral:** por **Expected Value (EV)** con costos de transacción y relación R:R explícita.  
-- **Backtest:** análisis **Walk‑Forward** con costos, *position sizing* fraccional y *stops* globales de riesgo.
+- **Algoritmo:** XGBoost (clasificación binaria).  
+- **Objetivo del modelo:** probabilidad de que una operación alcance el *take‑profit* antes del *stop* en un horizonte de **3 velas**.  
+- **Métrica del *tuning*:** **PR‑AUC** (apropiada con desbalance).  
+- **Calibración:** **Isotonic Regression** en *hold‑out*.  
+- **Selección de umbral:** por **Expected Value (EV)** con costos y R:R explícita.  
+- **Backtest:** análisis **Walk‑Forward** con costos, *position sizing* fraccional y **stop global**.
 
 **Mejor PR‑AUC (tuning)**: `0.6455`  
-**Mejores hiperparámetros (Optuna):**
+**Hiperparámetros (Optuna):**
 ```json
 {
   "max_depth": 8,
@@ -45,47 +53,52 @@
   "max_delta_step": 0
 }
 ```
-**Notas de entrenamiento final:** `scale_pos_weight=1.05` · Probabilidades calibradas con isotónica.
+**Entrenamiento final:** `scale_pos_weight=1.05` · Probabilidades calibradas con isotónica.
+
+---
+
+## Demo visual
+
+> Coloca tus GIFs en `ML/assets/` y **asegúrate de que tengan extensión `.gif`**.  
+> Si tus nombres son distintos, renómbralos o cambia el `src` abajo.
+
+<p align="center">
+  <img src="ML/assets/Model.gif" alt="Pipeline del modelo" width="760">
+</p>
+
+<p align="center">
+  <img src="ML/assets/BTesting.gif" alt="Backtest Walk-Forward" width="760">
+</p>
+
+<p align="center">
+  <img src="ML/assets/Graf.gif" alt="Métricas y gráficas" width="760">
+</p>
 
 ---
 
 ## Cómo funciona (pipeline ML)
 
 1. **Procesamiento de datos & *feature engineering*** (`ML/data_processing.py`)  
-   - OHLCV de **BTC/USDT** en marco **15m**.  
-   - Indicadores: medias móviles (SMA/EMA), RSI, MACD, ATR, Bandas de Bollinger, ADX, volumen/OBV, entre otros.  
-   - **Etiquetado dinámico** por volatilidad (ATR): horizonte de **3 velas**, con TP/SL derivados de la volatilidad.
+   - OHLCV de **BTC/USDT** (marco **15m**).  
+   - Indicadores: SMA/EMA, RSI, MACD, ATR, Bandas de Bollinger, ADX, volumen/OBV, etc.  
+   - **Etiquetado dinámico** por volatilidad (ATR): horizonte **3 velas**, con TP/SL derivados de volatilidad.
 
 2. **Entrenamiento y optimización** (`ML/model_training.py`)  
-   - Tuning con **Optuna**, validación temporal purgada/embargada.  
+   - Tuning con **Optuna** usando validación temporal purgada/embargada.  
    - **Calibración isotónica** en *hold‑out*.  
-   - **Selección de umbral por EV**: el umbral no es 0.5 fijo; se busca maximizar EV considerando **costos** y **R:R**.
+   - **Umbral por EV**: no se usa 0.5 fijo; se maximiza EV con **costos** + **R:R**.
 
 3. **Backtest Walk‑Forward** (`ML/backtest_improved.py`)  
-   - Ventanas móviles (train → test) para evitar *look‑ahead bias*.  
+   - Ventanas móviles (train → test) para reducir *look‑ahead bias*.  
    - Simulación con **comisiones**, **slippage** y **límite de operaciones** por bloque.  
    - *Position sizing* fraccional y **stop global** de pérdida.
 
-<p align="center">
-  <img src="ML/assets/ModelGif" alt="Proceso del modelo" width="700">
-</p>
-
-<p align="center">
-  <img src="ML/assets/BackTest" alt="Proceso del modelo" width="700">
-</p>
-
-
-<p align="center">
-  <img src="ML/assets/Graf" alt="Proceso del modelo" width="700">
-</p>
-
-
+---
 
 ## Resultados del modelo
 
 ### Métricas en *test* (probabilidades calibradas; umbral aplicado = **0.780**)
-
-> Con este umbral alto, **no se generaron señales** en test (Prec/Recall/F1=0). Esto es informativo: la calibración + umbral conservador redujeron la cobertura. Más abajo se proponen ajustes de umbral/cobertura para producción.
+> Con este umbral alto, **no se generaron señales** en test (Prec/Recall/F1=0). Es útil: la combinación calibración + umbral conservador redujo cobertura. Abajo se sugieren ajustes.
 
 | Métrica | Valor |
 |---|---|
@@ -99,24 +112,15 @@
 | MCC | 0.0000 |
 | PosRate (y=1) | 0.502 |
 
-**Figuras de evaluación** (mueve/guarda las imágenes en `ML/assets` y referencia en el README):  
-- *Precision/Recall vs Threshold*  
-  `ML/assets/threshold_precision_recall_test.png`  
-- *Curva ROC*  
-  `ML/assets/roc_curve_binary_test.png`  
-- *Distribución de probabilidades (por clase) con umbral 0.780*  
-  `ML/assets/probability_hist_test.png`
-
-Para vista previa local rápida (no producirá imágenes en GitHub hasta que subas los archivos a `ML/assets`):  
+**Figuras:**  
 ![Precision/Recall vs Threshold](ML/assets/threshold_precision_recall_test.png)  
-![ROC Curve](ML/assets/roc_curve_binary_test.png)  
+![Curva ROC](ML/assets/roc_curve_binary_test.png)  
 ![Distribución de probabilidades](ML/assets/probability_hist_test.png)
 
 ### Umbral y candidatos
-Se evaluaron candidatos (extracto). Muchos fueron descartados por **n<min_signals** en *hold‑out*, por lo que el selector propuso un **umbral final = 0.780** que, en *test*, produjo 0 señales.
+Se evaluaron candidatos; varios fueron descartados por **n < min_signals** en *hold‑out*. El **umbral final = 0.780**, que en *test* produjo 0 señales.
 
 ### EV por decil de probabilidad (*proxy*)
-Resumen (extracto de *hold‑out/test*):  
 ```
 dec  n     p_mean   hit     ev_proxy
 0    1102  0.3388   0.3339  -0.0268
@@ -127,13 +131,12 @@ dec  n     p_mean   hit     ev_proxy
 5    1904  0.6697   0.6381   0.8605
 6     504  0.7742   0.6885   1.0074
 ```
-**Lectura crítica:** el EV *proxy* crece con la probabilidad, lo cual es coherente. Sin embargo, fijar **umbral=0.78** desplaza cobertura hacia cero en *test*. Para uso práctico conviene **bajar el umbral** hasta lograr un **trade‑off cobertura/EV** estable (p.ej., *target* de 0.6–0.65 si los costos lo permiten) o imponer un **mínimo de señales** por ventana.
 
 ---
 
 ## Backtest Walk‑Forward (WFA)
 
-> El **WFA está concebido para *ilustrar* el flujo de evaluación y stress del modelo**. En la corrida incluida se usan reglas deliberadamente conservadoras (costos, límites, *stop* global), por lo que **los resultados no reflejan una estrategia óptima**, sino la **robustez del andamiaje**.
+> El **WFA ilustra** el flujo de evaluación y *stress* del modelo. En la corrida de ejemplo se usan reglas conservadoras (costos, límites, *stop* global), por lo que **no busca optimizar PnL** sino demostrar **robustez del andamiaje**.
 
 **Extracto de logs:**
 ```
@@ -144,37 +147,32 @@ WFA ... trades=60 | capital=$502.16
 [EQUITY] ... equity=$495.87 dd=50.41%
 [WARNING] Capital cayó a 495.87 (49.6% del inicial). Stop global activado; simulación detenida.
 ```
-**Resumen WFA (corrida de ejemplo):**
-- **Capital inicial:** 1,000 USD  
-- **Capital final:** ~**495.87 USD** (stop global del 50% activado)  
-- **Operaciones por bloque:** límite = 60  
-- **Conclusión:** el WFA evidencia que con el **umbral/coverage actual** y parámetros de riesgo/costos, el sistema **no es rentable**. Es un buen *baseline* para iterar.
+**Resumen:** capital 1,000 → **495.87 USD** (stop del 50% activado). Es un **baseline** para iterar.
 
-Para reportes visuales, sube `results_wfa/equity_curve.png` y enlázalo aquí:  
 ![Equity Curve](results_wfa/equity_curve.png)
 
 ---
 
 ## Limitaciones y decisiones de diseño
 
-- **Cobertura vs. precisión:** el umbral 0.780 maximiza EV teórico con restricciones, pero **reduce señales a 0** en *test*.  
-- **Costos y fricción:** se incluyen comisión y *slippage*; pequeñas diferencias impactan el EV.  
-- **Etiquetado y *horizon bias*:** horizonte de 3 velas; otros horizontes pueden modificar la señal.  
-- **No es HFT:** el motor de backtest simula latencia nula/orden perfecto; en vivo habrá más fricción.  
-- **Datos & *non‑stationarity*:** BTC/USDT (15m) cambia de régimen; el WFA intenta capturar esto.
+- **Cobertura vs. precisión:** el umbral 0.780 maximiza EV con restricciones, pero **reduce señales a 0** en *test*.  
+- **Costos/fricción:** comisiones y *slippage* incluidos; pequeñas variaciones impactan EV.  
+- **Etiquetado / horizonte:** 3 velas; otros horizontes cambian la señal.  
+- **No HFT:** backtest con latencia cero; en vivo la fricción será mayor.  
+- **Régimen de mercado:** BTC/USDT (15m) cambia de régimen; el WFA lo captura parcialmente.
 
 ---
 
 ## Próximos pasos
 
-1. **Ajuste de umbral con objetivo de cobertura**: fijar *target* de señales por ventana (p.ej., 10–30) o un rango de *recall* mínimo, p.ej., 0.55–0.65.  
-2. **Relajar `min_signals` en *hold‑out*** para evitar descartar *thresholds* con buen EV por falta de muestras.  
+1. **Ajustar umbral con objetivo de cobertura:** fijar *target* de señales por ventana (p.ej., 10–30) o rango mínimo de *recall* (0.55–0.65).  
+2. **Relajar `min_signals` en *hold‑out*** para evitar descartar *thresholds* con buen EV.  
 3. **Selector EV con *guard‑rails***: penalizar umbrales que dejen `trades/día≈0` o imponer `thr_max` dinámico.  
-4. **Re‑tuning con costos en la función objetivo** (cost‑aware PR‑AUC o EV directo).  
+4. **Re-tuning *cost-aware*** (función objetivo basada en EV/costos).  
 5. **Features y *regime filters***: hora del día, tendencia, volatilidad de régimen, *microstructure*.  
 6. **Revisión de etiquetado** (TP/SL dinámicos y *look‑ahead*).  
-7. **Experimentar con *focal loss*/`scale_pos_weight` y calibración por platt/isotónica comparada.  
-8. **Monitoreo de calibración** (*reliability curve*) y *drift* entre *hold‑out* y *test*.
+7. **Comparar calibraciones** (Platt vs. isotónica) y `scale_pos_weight`/focal loss.  
+8. **Monitoreo de calibración** (curvas de confiabilidad) y *drift* entre *hold‑out* y *test*.
 
 ---
 
@@ -185,13 +183,13 @@ Para reportes visuales, sube `results_wfa/equity_curve.png` y enlázalo aquí:
 ├── ML/
 │   ├── data/                 # Datos crudos/procesados
 │   ├── logs/                 # Logs de entrenamiento/backtest
-│   ├── results/              # Artefactos del modelo (pipeline, umbral, métricas)
-│   ├── out/                  # Salidas intermedias de WFA
+│   ├── results/              # Artefactos del modelo
+│   ├── out/                  # Salidas intermedias del WFA
+│   ├── assets/               # Figuras y GIFs para el README
 │   ├── data_processing.py
 │   ├── model_training.py
 │   └── backtest_improved.py
-├── results_wfa/              # Curvas de equity, trades, métricas del WFA
-├── ML/assets/                # Coloca aquí las figuras del README
+├── results_wfa/              # Equity/trades/métricas del WFA
 ├── scripts/
 │   └── run_pipeline.sh
 ├── requirements.txt
@@ -206,7 +204,7 @@ Para reportes visuales, sube `results_wfa/equity_curve.png` y enlázalo aquí:
 git clone <tu-repo>
 cd ModelMLTrading
 python -m venv .venv
-source .venv/bin/activate  # en Windows: .venv\Scripts\activate
+source .venv/bin/activate  # En Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
@@ -262,18 +260,41 @@ STEP_BARS=500
 ## Reproducibilidad
 
 - Versiones fijadas en `requirements.txt`.  
-- Semillas controladas (cuando aplica) y validación temporal con **purge/embargo**.  
-- Se guardan: `metrics_test.json`, `reliability_test.csv`, `classification_report_test.txt`, `feature_importance_permutation_test.csv`, `threshold_candidates.csv`, `*_trained_pipeline.joblib`, `iso_cal.joblib`.
+- Semillas controladas y validación temporal con **purge/embargo**.  
+- Artefactos: `metrics_test.json`, `reliability_test.csv`, `classification_report_test.txt`, `feature_importance_permutation_test.csv`, `threshold_candidates.csv`, `*_trained_pipeline.joblib`, `iso_cal.joblib`.
 
-> **Tip:** sube a `ML/assets/` las imágenes `threshold_precision_recall_test.png`, `roc_curve_binary_test.png` y `probability_hist_test.png` para que el README las muestre en GitHub.
+> **Checklist de assets (para que el README se vea bien en GitHub):**
+> - `ML/assets/Model.gif`, `ML/assets/BTesting.gif`, `ML/assets/Graf.gif`  
+> - `ML/assets/threshold_precision_recall_test.png`, `ML/assets/roc_curve_binary_test.png`, `ML/assets/probability_hist_test.png`  
+> - `results_wfa/equity_curve.png`
+
+---
+
+## Cómo subir a GitHub
+
+```bash
+# 1) Inicializa el repo (si aún no existe)
+git init
+git add .
+git commit -m "Proyecto: pipeline ML trading (portafolio)"
+
+# 2) Crea la rama principal
+git branch -M main
+
+# 3) Conecta tu repositorio remoto (reemplaza <usuario> y <repo>)
+git remote add origin https://github.com/<usuario>/<repo>.git
+
+# 4) Sube todo
+git push -u origin main
+```
+
+> **Consejos de presentación del portafolio**
+> - Coloca los GIFs al inicio (sección *Demo visual*) y mantén un tono claro/honesto.  
+> - Añade una sección “Qué aprendí / Decisiones de ingeniería”.  
+> - Si usas licencia, crea `LICENSE` (MIT es común para portafolio) y referencia en el README.
 
 ---
 
 ## Descargo de responsabilidad
 
-Este proyecto es **formativo**. **No** constituye consejo financiero. Los criptoactivos conllevan riesgo elevado. Usa este repositorio para **aprender, experimentar y evaluar** un pipeline realista de ML aplicado a trading, manteniendo siempre un enfoque crítico sobre las limitaciones del modelo y del backtest.
-
----
-
-**Autor:** Proyecto de ingeniería de ML (portafolio).  
-**Contacto:** abre un *Issue* o *Pull Request* con dudas/mejoras.
+Proyecto **formativo**. **No** constituye consejo financiero. Usa este repositorio para **aprender** y **evaluar** un pipeline realista de ML aplicado a trading, manteniendo un enfoque crítico sobre las limitaciones del modelo y del backtest.
