@@ -1,274 +1,226 @@
-import asyncio
-import aiohttp
-import pandas as pd
-import numpy as np
-import pandas_ta as ta
-import logging
+from __future__ import annotations
 import os
 import sys
-from datetime import datetime, timedelta
+import time
+import logging
+import argparse
+from pathlib import Path
+from typing import Optional
 
-BASE_PATH = os.path.dirname(os.path.abspath(__file__))
+import numpy as np
+import pandas as pd
+import requests
 
-# Configuración: en esta versión, eliminamos VWAP, ATR, CCI y SMA_200 para simplificar.
-config = {
-    'data': {
-        'symbols': ['BTCUSDT'],
-        'interval': '15m',
-        'start_date': '2016-06-07',
-        'end_date': '2025-01-29',
-        'max_candles': 800000
-    },
-    'output': {
-        'processed_data_dir': 'ML/data/processed',
-        'log_dir': 'logs',
-    }
-}
+from ML.indicators import (
+    compute_adx, compute_atr, compute_bbands, compute_macd, compute_obv, compute_rsi, _ema
+)
 
-# Lista de columnas a conservar (sin VWAP, ATR, CCI, SMA_200)
-FIXED_FEATURES = [
-    'open', 'high', 'low', 'close', 'volume',
-    'RSI', 'MACD', 'MACDs', 'MACDh',
-    'SMA_10', 'SMA_50', 'EMA_10', 'EMA_50',
-    'OBV', 'BBL', 'BBM', 'BBU'
-]
+# --- Configuración de Logging ---
+logger = logging.getLogger("dataproc")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    hdl = logging.StreamHandler(sys.stdout)
+    hdl.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    logger.addHandler(hdl)
 
-def setup_logging(log_dir: str) -> logging.Logger:
-    logger = logging.getLogger('fetch_and_process_data')
-    logger.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+# --- Parámetros Globales y Rutas ---
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-    os.makedirs(log_dir, exist_ok=True)
-    log_file_path = os.path.join(log_dir, 'data_process.log')
+SYMBOL = os.getenv("SYMBOL", "BTCUSDT")
+INTERVAL = os.getenv("INTERVAL", "15m")
+START = os.getenv("START", "2017-03-01")
+END = os.getenv("END", "")
+LOOK_AHEAD = int(os.getenv("LOOK_AHEAD", "3"))
+K_VOL = float(os.getenv("K_VOL", "1.8"))
 
-    file_handler = logging.FileHandler(log_file_path)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
+DATA_DIR = Path(os.getenv("DATA_DIR", "ML/data"))
+PROCESSED_DIR = DATA_DIR / "processed"
+RESULTS_DIR = Path(os.getenv("RESULTS_DIR", "ML/results"))
+PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
+OUT_CSV = PROCESSED_DIR / f"{SYMBOL}_{INTERVAL}_processed.csv"
+FEATURE_FILE = RESULTS_DIR / "feature_cols.txt"
+FEATURE_FILE_ALIAS = RESULTS_DIR / "XGBoost_Binario15m_feature_cols.txt"
 
-    return logger
+BINANCE_BASE = "https://api.binance.com"
+INTERVAL_MAP = {"1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m", "1h": "1h", "4h": "4h", "1d": "1d"}
 
-logger = setup_logging(os.path.join(BASE_PATH, config['output']['log_dir']))
 
-def interval_to_milliseconds(interval: str) -> int:
-    unit = interval[-1]
-    try:
-        value = int(interval[:-1])
-    except ValueError:
-        raise ValueError(f"Formato de intervalo inválido: {interval}")
-    
-    if unit == 'm':
-        return value * 60 * 1000
-    elif unit == 'h':
-        return value * 60 * 60 * 1000
-    elif unit == 'd':
-        return value * 24 * 60 * 60 * 1000
-    elif unit == 'w':
-        return value * 7 * 24 * 60 * 60 * 1000
-    elif unit == 'M':
-        return value * 30 * 24 * 60 * 60 * 1000
+def _to_ms(s: str) -> int:
+    """Convierte una fecha en string a milisegundos UTC."""
+    return int(pd.Timestamp(s, tz="UTC").timestamp() * 1000)
+
+
+def fetch_klines_binance(symbol: str, interval: str, start: str, end: str = "") -> pd.DataFrame:
+    """
+    Descarga velas OHLCV desde la API de Binance.
+
+    Maneja la paginación de la API para obtener todos los datos en el rango
+    de fechas especificado.
+    """
+    if interval not in INTERVAL_MAP:
+        raise ValueError(f"Intervalo no soportado: {interval}")
+
+    url = f"{BINANCE_BASE}/api/v3/klines"
+    start_ms = _to_ms(start)
+    end_ms = _to_ms(end) if end else None
+    dfs = []
+
+    while True:
+        params = {"symbol": symbol, "interval": interval, "startTime": start_ms, "limit": 1000}
+        if end_ms:
+            params["endTime"] = end_ms
+
+        resp = requests.get(url, params=params, timeout=20)
+        resp.raise_for_status()
+        arr = resp.json()
+        if not arr:
+            break
+
+        df = pd.DataFrame(arr, columns=[
+            "open_time", "open", "high", "low", "close", "volume",
+            "close_time", "quote_asset_volume", "number_of_trades",
+            "taker_buy_base", "taker_buy_quote", "ignore"
+        ])
+        df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+        num_cols = ["open", "high", "low", "close", "volume", "quote_asset_volume", "taker_buy_base", "taker_buy_quote"]
+        df[num_cols] = df[num_cols].astype(float)
+        df["number_of_trades"] = df["number_of_trades"].astype(int)
+        dfs.append(df[["open_time", "open", "high", "low", "close", "volume", "number_of_trades"]])
+
+        last_open = arr[-1][0]
+        if last_open == start_ms:
+            break
+        start_ms = last_open + 1
+        time.sleep(0.1)
+
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+
+def build_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calcula y añade indicadores técnicos al DataFrame.
+
+    Args:
+        df: DataFrame con columnas OHLCV.
+
+    Returns:
+        DataFrame con los indicadores añadidos como nuevas columnas.
+    """
+    out = df.copy()
+    out["ret_1"] = out["close"].pct_change()
+    out["ret_3"] = out["close"].pct_change(3)
+    out["ret_12"] = out["close"].pct_change(12)
+
+    # Medias móviles (nombradas en mayúsculas para compatibilidad con otros módulos).
+    out["SMA_10"] = out["close"].rolling(10, min_periods=10).mean()
+    out["SMA_20"] = out["close"].rolling(20, min_periods=20).mean()
+    out["SMA_50"] = out["close"].rolling(50, min_periods=50).mean()
+    out["EMA_10"] = _ema(out["close"], 10)
+    out["EMA_20"] = _ema(out["close"], 20)
+    out["EMA_50"] = _ema(out["close"], 50)
+
+    out["ATR_14"] = compute_atr(out, 14)
+    out["RSI"] = compute_rsi(out, 14)
+
+    macd, macd_sig, macd_hist = compute_macd(out, 12, 26, 9)
+    out["MACD"] = macd
+    out["MACDs"] = macd_sig
+    out["MACDh"] = macd_hist
+
+    mid, bbu, bbl = compute_bbands(out, 20, 2.0)
+    out["BBM"] = mid
+    out["BBU"] = bbu
+    out["BBL"] = bbl
+
+    out["OBV"] = compute_obv(out)
+    out["ADX_14"] = compute_adx(out, 14)
+
+    out = out.dropna().copy()
+    return out
+
+
+def make_labels(df: pd.DataFrame, look_ahead: int = 3, k_vol: float = 1.8) -> pd.Series:
+    """
+    Genera la etiqueta binaria para el modelo de clasificación.
+
+    La etiqueta es `1` si el precio futuro supera un umbral dinámico basado
+    en la volatilidad (ATR), y `0` en caso contrario.
+    """
+    atr = df["ATR_14"]
+    close = df["close"]
+    future_close = close.shift(-look_ahead)
+
+    # El umbral es un múltiplo del ATR para adaptarse a la volatilidad del mercado.
+    threshold = k_vol * (atr / close)
+    target = (future_close >= close * (1 + threshold)).astype(int)
+    return target
+
+
+def ensure_feature_files(feature_cols: list[str]):
+    """Guarda la lista de nombres de features en un archivo de texto."""
+    txt = "\n".join(feature_cols)
+    FEATURE_FILE.write_text(txt, encoding="utf-8")
+    FEATURE_FILE_ALIAS.write_text(txt, encoding="utf-8")
+    logger.info(f"Lista de features guardada en {FEATURE_FILE} y alias {FEATURE_FILE_ALIAS}")
+
+
+def run(symbol: str, interval: str, start: str, end: str,
+        look_ahead: int, k_vol: float, out_csv: Path):
+    """
+    Orquesta el proceso completo de adquisición y procesamiento de datos.
+    """
+    if out_csv.exists():
+        logger.info(f"Usando archivo CSV existente: {out_csv}")
+        df = pd.read_csv(out_csv)
+        df["open_time"] = pd.to_datetime(df["open_time"], utc=True)
     else:
-        raise ValueError(f"Intervalo de tiempo no soportado: {interval}")
+        logger.info(f"Descargando {symbol} {interval} desde {start}...")
+        raw = fetch_klines_binance(symbol, interval, start, end)
+        if raw.empty:
+            raise RuntimeError("No se obtuvieron velas. Verifica las fechas o el símbolo.")
+        raw = raw.sort_values("open_time").reset_index(drop=True)
+        raw.to_csv(PROCESSED_DIR / f"{symbol}_{interval}_raw.csv", index=False)
+        df = raw.copy()
 
-async def fetch_klines(session, symbol, interval, start_ts, end_ts, limit=1000) -> list:
-    url = "https://api.binance.com/api/v3/klines"
-    params = {
-        'symbol': symbol,
-        'interval': interval,
-        'startTime': start_ts,
-        'endTime': end_ts,
-        'limit': limit
-    }
-    max_retries = 5
-    for attempt in range(max_retries):
-        try:
-            async with session.get(url, params=params, timeout=10) as response:
-                response.raise_for_status()
-                data = await response.json()
-                if isinstance(data, list):
-                    return data
-                else:
-                    logger.error(f"Respuesta inesperada para {symbol}: {data}")
-                    return []
-        except Exception as e:
-            logger.error(f"Error al obtener datos para {symbol} (Intento {attempt+1}/{max_retries}): {e}")
-            await asyncio.sleep(2)
-    logger.error(f"No se pudo obtener datos para {symbol} después de {max_retries} intentos.")
-    return []
+    df = df.set_index("open_time").sort_index()
+    feats = build_features(df)
+    y = make_labels(feats, look_ahead, k_vol)
+    feats["target_up"] = y
+    feats.reset_index().to_csv(out_csv, index=False)
 
-async def get_historical_data(symbol: str, interval: str, start_str: str, end_str: str, max_candles: int) -> pd.DataFrame:
-    logger.info(f"Obteniendo datos para {symbol} desde {start_str} hasta {end_str}")
-    limit = 1000
-    timeframe = interval_to_milliseconds(interval)
+    # Guarda la lista de columnas de features (excluyendo target y OHLCV).
+    drop_cols = {"target_up"}
+    ohlcv = {"open", "high", "low", "close", "volume", "number_of_trades"}
+    feature_cols = [col for col in feats.columns if col not in drop_cols and col not in ohlcv]
 
-    start_ts = int(pd.to_datetime(start_str).timestamp() * 1000)
-    end_ts = int(pd.to_datetime(end_str).timestamp() * 1000)
-    klines = []
-    total_fetched = 0
+    ensure_feature_files(feature_cols)
+    logger.info(f"Procesamiento completado. Salida: {out_csv} ({len(feats)} filas, {len(feature_cols)} features)")
 
-    async with aiohttp.ClientSession() as session:
-        while total_fetched < max_candles and start_ts < end_ts:
-            fetch_limit = min(limit, max_candles - total_fetched)
-            data = await fetch_klines(session, symbol, interval, start_ts, end_ts, fetch_limit)
-            if not data:
-                break
 
-            klines.extend(data)
-            total_fetched += len(data)
-            last_open_time = data[-1][0]
-            start_ts = last_open_time + timeframe
-            await asyncio.sleep(0.2)
+def parse_args():
+    """Define y parsea los argumentos de línea de comandos."""
+    ap = argparse.ArgumentParser(description="Script de procesamiento de datos para el modelo de trading.")
+    ap.add_argument("--symbol", default=SYMBOL, help="Símbolo a procesar (ej. BTCUSDT).")
+    ap.add_argument("--interval", default=INTERVAL, help="Intervalo de las velas (ej. 15m).")
+    ap.add_argument("--start", default=START, help="Fecha de inicio (YYYY-MM-DD).")
+    ap.add_argument("--end", default=END, help="Fecha de fin (opcional).")
+    ap.add_argument("--lookahead", type=int, default=LOOK_AHEAD, help="Horizonte para la etiqueta.")
+    ap.add_argument("--kvol", type=float, default=K_VOL, help="Multiplicador de volatilidad para la etiqueta.")
+    return ap.parse_args()
 
-    if not klines:
-        logger.warning(f"No se obtuvieron datos para {symbol} en ese rango.")
-        return pd.DataFrame()
-
-    df = pd.DataFrame(klines, columns=[
-        'open_time', 'open', 'high', 'low', 'close', 'volume',
-        'close_time', 'quote_asset_volume', 'number_of_trades',
-        'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-    ])
-    df['open_time'] = pd.to_datetime(df['open_time'], unit='ms', utc=True)
-    return df
-
-def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Calcula indicadores técnicos básicos con pandas_ta.
-    Se conservan únicamente las columnas definidas en FIXED_FEATURES.
-    """
-    if df.empty:
-        logger.warning("DataFrame vacío; no se calcularán indicadores.")
-        return df
-
-    df = df.copy()
-    df.sort_values(by='open_time', inplace=True)
-    df.set_index('open_time', inplace=True)
-
-    # Convertir columnas a float
-    for col in ['open', 'high', 'low', 'close', 'volume']:
-        df[col] = df[col].astype(float)
-
-    # Calcular indicadores básicos
-    df.ta.rsi(length=14, append=True)
-    df.ta.macd(append=True)
-    df.ta.sma(length=10, append=True)
-    df.ta.sma(length=50, append=True)
-    df.ta.ema(length=10, append=True)
-    df.ta.ema(length=50, append=True)
-    df.ta.obv(append=True)
-    df.ta.bbands(length=20, std=2, append=True)
-
-    # Eliminar filas con NaN en OHLCV
-    df.dropna(subset=['open','high','low','close','volume'], how='any', inplace=True)
-
-    rename_dict = {
-        'RSI_14': 'RSI',
-        'MACD_12_26_9': 'MACD',
-        'MACDs_12_26_9': 'MACDs',
-        'MACDh_12_26_9': 'MACDh',
-        'BBL_20_2.0': 'BBL',
-        'BBM_20_2.0': 'BBM',
-        'BBU_20_2.0': 'BBU',
-        'SMA_10': 'SMA_10',
-        'SMA_50': 'SMA_50',
-        'EMA_10': 'EMA_10',
-        'EMA_50': 'EMA_50'
-    }
-    df.rename(columns=rename_dict, inplace=True)
-
-    for col in FIXED_FEATURES:
-        if col not in df.columns:
-            logger.warning(f"La columna '{col}' no se generó, se rellena con NaN.")
-            df[col] = np.nan
-
-    df = df[FIXED_FEATURES]
-    df.reset_index(inplace=True)
-    return df
-
-def get_last_saved_timestamp(symbol: str, interval: str) -> datetime:
-    """
-    Retorna el último timestamp válido guardado en el CSV.
-    Si no existe o es inválido, retorna config['data']['start_date'].
-    """
-    processed_file = os.path.join(
-        config['output']['processed_data_dir'],
-        f"{symbol}_{interval}_processed.csv"
-    )
-    if os.path.exists(processed_file):
-        try:
-            df_existing = pd.read_csv(processed_file, parse_dates=['open_time'])
-        except Exception as e:
-            logger.error(f"Error al leer el archivo {processed_file}: {e}")
-            return pd.to_datetime(config['data']['start_date'])
-        # Si el DataFrame está vacío o la columna 'open_time' es toda NaT, usar start_date
-        if df_existing.empty or df_existing['open_time'].dropna().empty:
-            return pd.to_datetime(config['data']['start_date'])
-        last_time = df_existing['open_time'].dropna().max()
-        if pd.isna(last_time):
-            return pd.to_datetime(config['data']['start_date'])
-        return last_time
-    else:
-        return pd.to_datetime(config['data']['start_date'])
-
-async def main_async():
-    os.makedirs(config['output']['processed_data_dir'], exist_ok=True)
-
-    for symbol in config['data']['symbols']:
-        last_timestamp = get_last_saved_timestamp(symbol, config['data']['interval'])
-        if pd.isna(last_timestamp):
-            last_timestamp = pd.to_datetime(config['data']['start_date'])
-        start_ts_str = (last_timestamp + timedelta(milliseconds=1)).strftime('%Y-%m-%d %H:%M:%S')
-
-        df_raw = await get_historical_data(
-            symbol=symbol,
-            interval=config['data']['interval'],
-            start_str=start_ts_str,
-            end_str=config['data']['end_date'],
-            max_candles=config['data']['max_candles']
-        )
-
-        if df_raw.empty:
-            logger.warning(f"No se descargaron nuevos datos para {symbol}.")
-            continue
-
-        df_processed = calculate_indicators(df_raw)
-
-        processed_file = os.path.join(
-            config['output']['processed_data_dir'],
-            f"{symbol}_{config['data']['interval']}_processed.csv"
-        )
-
-        if os.path.exists(processed_file):
-            df_existing = pd.read_csv(processed_file, parse_dates=['open_time'])
-            if not df_existing.empty:
-                df_existing.set_index('open_time', inplace=True)
-            else:
-                df_existing = pd.DataFrame()
-            if not df_processed.empty:
-                df_processed.set_index('open_time', inplace=True)
-            if not df_existing.empty:
-                df_combined = pd.concat([df_existing, df_processed])
-                df_combined = df_combined[~df_combined.index.duplicated(keep='last')]
-                df_combined.reset_index(inplace=True)
-            else:
-                df_combined = df_processed.reset_index()
-        else:
-            df_processed.reset_index(inplace=True)
-            df_combined = df_processed
-
-        df_combined.sort_values(by='open_time', inplace=True)
-        df_combined.to_csv(processed_file, index=False)
-        logger.info(f"Datos procesados (sin VWAP/ATR) guardados en {processed_file}")
-
-def main():
-    try:
-        asyncio.run(main_async())
-    except Exception as e:
-        logger.error(f"Error en el preprocesamiento: {e}")
-        sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    run(
+        symbol=args.symbol,
+        interval=args.interval,
+        start=args.start,
+        end=args.end,
+        look_ahead=args.lookahead,
+        k_vol=args.kvol,
+        out_csv=PROCESSED_DIR / f"{args.symbol}_{args.interval}_processed.csv"
+    )
