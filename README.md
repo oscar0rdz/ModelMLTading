@@ -50,8 +50,8 @@ Con el *setup* ganador entrené el **pipeline final**, ajusté `scale_pos_weight
 ## Demo visual (GIFs)
 
 > Coloca los GIFs en `ML/assets/` con **estos nombres y extensión `.gif`**. Si no aparecen en GitHub, usa las *URLs RAW* indicadas en comentarios del código o activa Git LFS para archivos pesados.
-![Pipeline](https://raw.githubusercontent.com/oscar0rdz/ModelMLTading/main/ML/assets/ML/assets/ModelGif.gif)
-![WFA](https://raw.githubusercontent.com/oscar0rdz/ModelMLTading/main/ML/assets/BackTest.gif)
+![Pipeline](https://raw.githubusercontent.com/oscar0rdz/ModelMLTading/ML/assets/ModelGif.gif)
+![WFA](https://raw.githubusercontent.com/oscar0rdz/ModelMLTading/ML/assets/BackTest.gif)
 
 
 <p align="center">
