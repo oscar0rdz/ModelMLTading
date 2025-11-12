@@ -84,18 +84,18 @@ Las figuras y animaciones provienen de la ejecución del proyecto y están en `M
 * **Demos en GIF/MP4** <img src="ML/assets/ModelGif.gif" alt="Pipeline (entrenamiento y evaluación)" width="720"><br> <img src="ML/assets/BackTest.gif" alt="Backtest WFA (flujo de señales)" width="720">
 
   RAW por si se requiere fuera del README:
-  `https://raw.githubusercontent.com/oscar0rdz/ModelMLTrading/main/ML/assets/ModelGif.gif`
-  `https://raw.githubusercontent.com/oscar0rdz/ModelMLTrading/main/ML/assets/BackTest.gif`
+*Modelo entrenando*
 <img src="ML/assets/ModelGif.gif" alt="Pipeline" width="720">
+
+*Backtesting*
+
 <img src="ML/assets/BackTest.gif" alt="WFA" width="720">
-https://raw.githubusercontent.com/oscar0rdz/ModelMLTrading/main/ML/assets/ModelGif.gif
-https://raw.githubusercontent.com/oscar0rdz/ModelMLTrading/main/ML/assets/BackTest.gif
 
 
 <p align="center">
   <img src="ML/assets/Graf.gif" alt="Métricas y gráficas" width="760">
 </p>
-> Nota: PNG/JPG < 2 MB; GIF ≤ 8–10 MB. Para demos largas existe una versión MP4 con miniatura clickeable.
+e.
 
 ---
 
@@ -108,9 +108,6 @@ Aun con esa cautela, el aprendizaje central es sólido: el modelo **clasifica po
 La pregunta a la decisión operable
 
 La meta inicial fue sencilla: **convertir probabilidades en decisiones que valgan la pena** en el marco de 15m. Tras construir *features* y fijar **PR‑AUC** como métrica, ejecuté **Optuna**. La búsqueda no fue lineal: *trials* 40–41 se movieron en `0.642–0.644`, el 42 fue *pruned* y el **trial 12** fijó el tope con `0.64437`. Esa región de hiperparámetros (profundidad 6, `min_child_weight≈10`, `colsample_bytree≈0.94`, `gamma≈1.7`) mostró **estabilidad**.  
-
-Con el *setup* ganador entrené el **pipeline final**, ajusté `scale_pos_weight=1.05` y **calibré** con isotónica. La conversación dejó de ser “¿clasifica?” para convertirse en “**¿cuándo opero?**”. Ahí entra el **selector de EV**: **`thr=0.582`** ofrece cobertura razonable (47 señales) y un **EV** positivo bajo costos, listo para pasar al WFA.
----
 
 ## 5) Cómo reproducir
 
