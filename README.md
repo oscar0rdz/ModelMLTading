@@ -84,7 +84,7 @@ Las figuras y animaciones provienen de la ejecución del proyecto y están en `M
 * **Demos en GIF/MP4**
 * Entrenamiento *
 * <img src="ML/assets/ModelGif.gif" alt="Pipeline (entrenamiento y evaluación)" width="720"><br>
-* Backtestin*
+* Backtestign*
 * <img src="ML/assets/BackTest.gif" alt="Backtest WFA (flujo de señales)" width="720">
 
 
