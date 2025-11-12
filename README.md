@@ -81,15 +81,12 @@ Las figuras y animaciones provienen de la ejecución del proyecto y están en `M
 * **Precisión/Recall vs Umbral (test)** → `ML/assets/threshold_precision_recall_test.png`
   Visualiza el intercambio cobertura/precisión al mover el umbral. Explica por qué umbrales altos concentran operaciones en contextos con mayor probabilidad estimada.
 
-* **Demos en GIF/MP4** <img src="ML/assets/ModelGif.gif" alt="Pipeline (entrenamiento y evaluación)" width="720"><br> <img src="ML/assets/BackTest.gif" alt="Backtest WFA (flujo de señales)" width="720">
+* **Demos en GIF/MP4**
+* Entrenamiento *
+* <img src="ML/assets/ModelGif.gif" alt="Pipeline (entrenamiento y evaluación)" width="720"><br>
+* Backtestin*
+* <img src="ML/assets/BackTest.gif" alt="Backtest WFA (flujo de señales)" width="720">
 
-  RAW por si se requiere fuera del README:
-*Modelo entrenando*
-<img src="ML/assets/ModelGif.gif" alt="Pipeline" width="720">
-
-*Backtesting*
-
-<img src="ML/assets/BackTest.gif" alt="WFA" width="720">
 
 
 <p align="center">
