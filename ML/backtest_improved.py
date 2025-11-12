@@ -12,7 +12,7 @@ import math
 import argparse
 import logging
 from dataclasses import dataclass
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, Tuple, List, Dict, Sequence
 
 import numpy as np
 import pandas as pd
@@ -97,8 +97,8 @@ STEP_BARS  = 500   # avanzar 5 días por iteración
 
 # Trading params
 INITIAL_CAPITAL   = 1000.0
-COMMISSION_RATE   = 0.0002     # 2 bps por lado (≈0.02%)
-SLIPPAGE_PCT      = 0.0001     # 1 bps
+COMMISSION_RATE   = float(os.getenv("COMMISSION_RATE", "0.0002"))
+SLIPPAGE_PCT      = float(os.getenv("SLIPPAGE_PCT", os.getenv("SLIPPAGE_BASE", "0.0001")))
 
 # Estrategia 3 velas (horizonte y gestión)
 HORIZON_BARS      = 3
@@ -114,12 +114,29 @@ BE_TRIGGER_FRAC    = 0.30       # a +30% del camino a TP, mover a break-even
 TSL_ACTIVATION_MULT= 1.00       # activa TSL tras BE (proporción del camino a TP)
 TSL_TRAIL_MULT     = 0.50       # trailing basado en (TP-Entry)
 
+def _env_bps(name_bps: str, name_pct: str, default_bps: float) -> float:
+    """Obtiene un valor en bps, aceptando equivalentes en formato fraccional."""
+    raw_bps = os.getenv(name_bps)
+    if raw_bps is not None and raw_bps.strip():
+        try:
+            return float(raw_bps)
+        except ValueError:
+            pass
+    raw_pct = os.getenv(name_pct)
+    if raw_pct is not None and raw_pct.strip():
+        try:
+            return float(raw_pct) * 10000.0
+        except ValueError:
+            pass
+    return default_bps
+
+
 def _cost_bps_from_env() -> float:
     """Calcula el costo efectivo en bps (maker ida/vuelta + slippage + estrés + spread)."""
-    maker_bps = float(os.getenv("MAKER_FEE_BPS", "1.0"))
-    slipp_bps = float(os.getenv("SLIPPAGE_BPS", "1.0"))
+    maker_bps = _env_bps("MAKER_FEE_BPS", "MAKER_FEE_PCT", 1.0)
+    slipp_bps = _env_bps("SLIPPAGE_BPS", "SLIPPAGE_PCT", 1.0)
     stress_bps = float(os.getenv("STRESS_COST_BPS", "1.0"))
-    spread_bps = float(os.getenv("SPREAD_MIN_BPS", "0.0"))
+    spread_bps = _env_bps("SPREAD_MIN_BPS", "SPREAD_PCT", 0.0)
     return maker_bps * 2.0 + slipp_bps + stress_bps + spread_bps
 
 
@@ -138,8 +155,15 @@ HOUR_GATE_MIN_SIGNALS = int(os.getenv("HOUR_GATE_MIN_SIGNALS", "24"))
 HOUR_GATE_MIN_COVERAGE = float(os.getenv("HOUR_GATE_MIN_COVERAGE", "0.30"))
 
 # Position sizing (risk-based)
-RISK_PER_TRADE      = 0.008   # % del capital
-MIN_RISK_PER_TRADE  = 0.0015
+RISK_PER_TRADE      = float(os.getenv("RISK_PER_TRADE", "0.008"))
+MIN_RISK_PER_TRADE  = float(os.getenv("MIN_RISK_PER_TRADE", "0.0015"))
+MAX_RISK_PER_TRADE  = float(os.getenv("MAX_RISK_PER_TRADE", "0.020"))
+SIZING_MIN_MULT     = float(os.getenv("SIZING_MIN_MULT", "0.6"))
+SIZING_MAX_MULT     = float(os.getenv("SIZING_MAX_MULT", "1.5"))
+SIZING_PROB_TARGET  = float(os.getenv("SIZING_PROB_TARGET", "0.90"))
+SIZING_EV_REF_BPS   = float(os.getenv("SIZING_EV_REF_BPS", str(EV_MARGIN_BPS)))
+SIZING_EV_WEIGHT    = float(os.getenv("SIZING_EV_WEIGHT", "0.35"))
+SIZING_EV_CLIP      = float(os.getenv("SIZING_EV_CLIP", "1.5"))
 
 # Señal por cuantiles (garantizar actividad)
 # Selección de umbral
@@ -182,6 +206,17 @@ HOLDOUT_QS = np.array([
     0.72, 0.70, 0.65, 0.60
 ], dtype=float)
 MAX_TRADES_PER_BLOCK = int(os.getenv("MAX_TRADES_PER_BLOCK", "60"))
+
+def _env_bool(name: str, default: bool) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() not in {"0", "false", "no", "off"}
+
+THR_SMOOTH_ENABLED = _env_bool("THR_SMOOTH_ENABLED", True)
+THR_SMOOTH_WINDOW = max(1, int(os.getenv("THR_SMOOTH_WINDOW", "3")))
+THR_SMOOTH_ALPHA = float(os.getenv("THR_SMOOTH_ALPHA", "0.35"))
+THR_SMOOTH_MAX_DELTA = float(os.getenv("THR_SMOOTH_MAX_DELTA", "0.04"))
 
 
 def _bps_to_mult(bps: float) -> float:
@@ -269,6 +304,19 @@ def clamp_prob_threshold(thr: float) -> float:
     if PROB_MAX is not None:
         thr = min(thr, PROB_MAX)
     return thr
+
+
+def _smooth_threshold(raw_thr: float, history: Optional[Sequence[float]]) -> float:
+    """Suaviza el umbral usando la mediana de las últimas ventanas."""
+    if not THR_SMOOTH_ENABLED or history is None or len(history) == 0:
+        return raw_thr
+    ref = float(np.median(np.asarray(history, dtype=float)))
+    blended = (1.0 - THR_SMOOTH_ALPHA) * float(raw_thr) + THR_SMOOTH_ALPHA * ref
+    if THR_SMOOTH_MAX_DELTA > 0:
+        upper = raw_thr + THR_SMOOTH_MAX_DELTA
+        lower = raw_thr - THR_SMOOTH_MAX_DELTA
+        blended = max(lower, min(upper, blended))
+    return blended
 
 
 def _ensure_bool_series(mask, index: pd.Index) -> pd.Series:
@@ -504,18 +552,46 @@ def build_model() -> Pipeline:
     return Pipeline([("pre", pre), ("xgb", xgb)])
 
 
+def _probability_risk_multiplier(prob: Optional[float], base_thr: Optional[float], ev_bps: Optional[float]) -> float:
+    """Ajusta el riesgo según la convicción (probabilidad y EV)."""
+    if prob is None or base_thr is None:
+        return 1.0
+    if not np.isfinite(prob) or not np.isfinite(base_thr):
+        return 1.0
+    prob_gap = max(0.0, float(prob) - float(base_thr))
+    prob_span = max(1e-4, SIZING_PROB_TARGET - float(base_thr))
+    prob_score = np.clip(prob_gap / prob_span, 0.0, 1.0)
+    ev_score = 0.0
+    if ev_bps is not None and np.isfinite(ev_bps):
+        ev_norm = float(ev_bps) / max(1.0, SIZING_EV_REF_BPS)
+        ev_score = np.clip(ev_norm / max(1e-6, SIZING_EV_CLIP), 0.0, 1.0)
+    blend = (1.0 - SIZING_EV_WEIGHT) * prob_score + SIZING_EV_WEIGHT * ev_score
+    mult = SIZING_MIN_MULT + blend * (SIZING_MAX_MULT - SIZING_MIN_MULT)
+    return float(np.clip(mult, SIZING_MIN_MULT, SIZING_MAX_MULT))
 
-def position_size(capital: float, entry: float, stop: float, consecutive_losses: int = 0) -> float:
+
+def position_size(
+    capital: float,
+    entry: float,
+    stop: float,
+    consecutive_losses: int = 0,
+    *,
+    prob_now: Optional[float] = None,
+    base_threshold: Optional[float] = None,
+    ev_bps: Optional[float] = None,
+) -> Tuple[float, float]:
     """Calcula el tamaño de posición respetando el riesgo por operación."""
     reduce = (0.9 ** consecutive_losses)
     capital_ratio = min(1.0, max(0.1, capital / INITIAL_CAPITAL))
     risk_eff = max(RISK_PER_TRADE * reduce * capital_ratio, MIN_RISK_PER_TRADE)
+    prob_mult = _probability_risk_multiplier(prob_now, base_threshold, ev_bps)
+    risk_eff = np.clip(risk_eff * prob_mult, MIN_RISK_PER_TRADE, MAX_RISK_PER_TRADE)
     risk_amt = capital * risk_eff
     dist = max(entry - stop, 1e-8)
     size = risk_amt / dist
     # cap notional 30% capital
     max_notional = 0.30 * capital
-    return min(size, max_notional / entry)
+    return min(size, max_notional / entry), float(risk_eff)
 
 
 
@@ -538,6 +614,7 @@ class Trade:
     model_prob: float = 0.0
     model_ev_bps: float = 0.0
     signal_note: str = ""
+    risk_fraction: float = 0.0
 
 @dataclass
 class ThresholdInfo:
@@ -553,6 +630,9 @@ class ThresholdInfo:
     holdout_ev_bps: float = float("nan")
     holdout_signals: int = 0
     holdout_note: str = ""
+    raw_threshold: float = float("nan")
+    base_threshold: float = float("nan")
+    smooth_threshold: float = float("nan")
 
 
 def _quantile_threshold(probs: np.ndarray, labels: np.ndarray, quantile: float, policy_name: str, used_fallback: bool) -> ThresholdInfo:
@@ -755,7 +835,13 @@ def compute_threshold_from_train(
     )
 
 
-def backtest_segment(df: pd.DataFrame, model: Pipeline, train_df: pd.DataFrame, initial_capital: float) -> Tuple[pd.DataFrame, pd.DataFrame, float, ThresholdInfo]:
+def backtest_segment(
+    df: pd.DataFrame,
+    model: Pipeline,
+    train_df: pd.DataFrame,
+    initial_capital: float,
+    threshold_history: Optional[Sequence[float]] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame, float, ThresholdInfo]:
     """Ejecuta el backtest en un bloque test usando el modelo y umbral derivados del bloque train."""
     seg = df.copy()
 
@@ -836,8 +922,20 @@ def backtest_segment(df: pd.DataFrame, model: Pipeline, train_df: pd.DataFrame, 
     # Filtro tendencia
     trend = seg[f"sma{SHORT_MA}"] > seg[f"sma{LONG_MA}"]
 
+    thr_raw = float(thr_info.threshold)
+    thr_info.raw_threshold = thr_raw
+    thr_smoothed = _smooth_threshold(thr_raw, threshold_history)
+    if THR_SMOOTH_ENABLED and threshold_history:
+        logger.info(
+            "Umbral suavizado: raw=%.4f → smooth=%.4f | hist_n=%d",
+            thr_raw,
+            thr_smoothed,
+            len(threshold_history),
+        )
     # Compute threshold from train and clamp to reasonable limits
-    thr = clamp_prob_threshold(float(thr_info.threshold))
+    thr = clamp_prob_threshold(float(thr_smoothed))
+    thr_info.base_threshold = float(thr)
+    thr_info.smooth_threshold = float(thr_smoothed)
     # keep a copy of the clamped threshold before any relaxations are applied
     thr_clamped = float(thr)
     holdout_win_pct = thr_info.holdout_win_rate * 100.0 if np.isfinite(thr_info.holdout_win_rate) else float("nan")
@@ -1143,16 +1241,24 @@ def backtest_segment(df: pd.DataFrame, model: Pipeline, train_df: pd.DataFrame, 
                 sl = entry / bps_to_mult(SL_BPS)
                 if sl >= entry:
                     continue
-                size = position_size(capital, entry, sl, consecutive_losses)
+                prob_now = float(seg.at[t_now, "prob"])
+                ev_now = float(seg.at[t_now, "ev_bps"])
+                note_now = str(seg.at[t_now, "signal_note"]) if "signal_note" in seg.columns else ""
+                size, applied_risk = position_size(
+                    capital,
+                    entry,
+                    sl,
+                    consecutive_losses,
+                    prob_now=prob_now,
+                    base_threshold=thr_clamped,
+                    ev_bps=ev_now,
+                )
                 if size <= 0:
                     continue
                 fee_entry = entry * size * COMMISSION_RATE
                 if capital <= fee_entry:
                     continue
                 capital -= fee_entry
-                prob_now = float(seg.at[t_now, "prob"])
-                ev_now = float(seg.at[t_now, "ev_bps"])
-                note_now = str(seg.at[t_now, "signal_note"]) if "signal_note" in seg.columns else ""
                 trades.append(Trade(
                     entry_time=t_now,
                     entry_price=entry,
@@ -1163,6 +1269,7 @@ def backtest_segment(df: pd.DataFrame, model: Pipeline, train_df: pd.DataFrame, 
                     model_prob=prob_now,
                     model_ev_bps=ev_now,
                     signal_note=note_now,
+                    risk_fraction=applied_risk,
                 ))
                 in_pos = True
                 bars_in_trade = 0
@@ -1230,10 +1337,11 @@ def walk_forward(df: pd.DataFrame, limit_blocks: Optional[int] = None) -> Tuple[
     start = 0
     capital = INITIAL_CAPITAL
     global_peak = INITIAL_CAPITAL
-    all_eq = []
-    all_tr = []
-    meta = []
+    all_eq: List[pd.DataFrame] = []
+    all_tr: List[pd.DataFrame] = []
+    meta: List[dict] = []
     blocks_run = 0
+    threshold_history: List[float] = []
 
     while True:
         tr_end = start + TRAIN_BARS
@@ -1259,7 +1367,13 @@ def walk_forward(df: pd.DataFrame, limit_blocks: Optional[int] = None) -> Tuple[
         tr_feat = prepare_window(raw_train)
         te_feat = prepare_window(raw_test)
 
-        eq, trd, capital, thr_info = backtest_segment(te_feat, model, tr_labeled, capital)
+        eq, trd, capital, thr_info = backtest_segment(
+            te_feat,
+            model,
+            tr_labeled,
+            capital,
+            threshold_history=threshold_history,
+        )
 
         thr_val = float(thr_info.threshold) if thr_info else float("nan")
         ev_val = float(thr_info.ev_bps) if thr_info else float("nan")
@@ -1293,6 +1407,15 @@ def walk_forward(df: pd.DataFrame, limit_blocks: Optional[int] = None) -> Tuple[
         if limit_blocks is not None and blocks_run >= int(limit_blocks):
             logger.info(f"--limit-blocks reached: stopping after {blocks_run} blocks")
             break
+
+        if (
+            thr_info is not None
+            and not thr_info.skip_block
+            and np.isfinite(thr_info.base_threshold)
+        ):
+            threshold_history.append(float(thr_info.base_threshold))
+            if len(threshold_history) > THR_SMOOTH_WINDOW:
+                del threshold_history[: len(threshold_history) - THR_SMOOTH_WINDOW]
 
         if not eq.empty:
             all_eq.append(eq)

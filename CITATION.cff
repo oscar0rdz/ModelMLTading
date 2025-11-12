@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "Si usas este repositorio en un trabajo académico o reporte, por favor cita:"
+title: "ModelMLTrading: End-to-End ML Pipeline for BTC/USDT (15m)"
+authors:
+  - family-names: Rodriguez
+    given-names: Oscar
+version: "0.3.0"
+date-released: "2024-11-11"
+url: "https://github.com/oscar0rdz/ModelMLTrading"

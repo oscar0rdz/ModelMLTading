@@ -127,7 +127,7 @@ TEST_SIZE       = _get_float("TEST_SIZE", 0.3)
 RANDOM_SEED     = _get_int("RANDOM_SEED", 44)
 
 SAMPLE_FRAC     = _get_float("SAMPLE_FRAC", 0.90)
-N_TRIALS        = _get_int("N_TRIALS", 100)
+N_TRIALS        = _get_int("N_TRIALS", 55)
 N_JOBS_OPTUNA   = _get_int("N_JOBS_OPTUNA", 1)
 OPTUNA_TIMEOUT  = _get_int("OPTUNA_TIMEOUT", 2400)  # s
 
@@ -156,8 +156,8 @@ VOL_WINDOW         = _get_int("VOL_WINDOW", 30)
 K_VOL              = _get_float("K_VOL", 1.5)
 
 
-TP_MULT           = _get_float("TP_MULT", 1.3)
-SL_MULT           = _get_float("SL_MULT", 0.5)
+TP_MULT           = _get_float("TP_MULT", 1.2)
+SL_MULT           = _get_float("SL_MULT", 0.4)
 COMMISSION_RATE   = _get_float("COMMISSION_RATE", 0.0003)     # por lado
 BASE_SPREAD_PCT   = _get_float("SPREAD_PCT", 0.00005)
 BASE_SLIPPAGE_PCT = _get_float("SLIPPAGE_BASE", 0.0001)
