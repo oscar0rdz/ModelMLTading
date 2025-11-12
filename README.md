@@ -1,6 +1,6 @@
 # ModelMLTrading · Pipeline de clasificación, calibración y evaluación temporal (BTC/USDT · 15m)
 
-Proyecto de **Machine Learning aplicado a mercados** orientado a portafolio. Muestra un pipeline completo para: (1) **estimar probabilidades** de que el *take‑profit* se alcance antes que el *stop‑loss* en un horizonte de **3 velas**, (2) **calibrar** esas probabilidades para que reflejen frecuencia observada y (3) **decidir** con un **umbral basado en valor esperado (EV)**, ilustrando su comportamiento mediante **Walk‑Forward Analysis (WFA)**.
+Proyecto de **Machine Learning aplicado a mercados** . Muestra un pipeline completo para: (1) **estimar probabilidades** de que el *take‑profit* se alcance antes que el *stop‑loss* en un horizonte de **3 velas**, (2) **calibrar** esas probabilidades para que reflejen frecuencia observada y (3) **decidir** con un **umbral basado en valor esperado (EV)**, ilustrando su comportamiento mediante **Walk‑Forward Analysis (WFA)**.
 
 > Uso principal: demostración educativa y de portafolio sobre buenas prácticas de ML en finanzas. No es asesoría financiera.
 
